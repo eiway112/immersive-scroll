@@ -1,0 +1,36 @@
+# 行尾策略：文本一律以 LF 入库、以 LF 检出；Windows 批处理例外。
+#
+# 为什么必须写进仓库自身，而不是依赖各机器配置：
+#   本机 core.autocrlf 是 **system 级 true**（--global 未设，2026-09-20 实测），
+#   即 Windows 习惯：检出 LF→CRLF、提交 CRLF→LF。不声明就带来两个后果：
+#     ① 「仓库是纯 LF」只是尚未被 git 触碰的假象 —— 行尾是否入历史取决于文件
+#        经由哪条路径写入，任何一次 checkout 都会把工作树改写成 CRLF；
+#     ② 伤害集中在**会被执行的入口** —— 带 shebang 的脚本一旦以
+#        `#!/usr/bin/env python3\r` 落盘，在 Git Bash / Linux 上以 ./ 执行会因
+#        解释器路径尾随 \r 而静默失败（pre-commit 钩子失效同理）。
+#   本文件让策略随 clone 生效，不依赖别人的 core.autocrlf。
+#
+# 本仓是公开发布仓（GitHub 开源），消费者会以任意平台 clone —— 行尾策略更必须随仓走。
+#
+# 本仓实测（2026-09-20，git ls-files --eol）：已跟踪文件对象层全为 LF，
+#   故启用本规则预期零 diff，无需 `git add --renormalize`；工作树残留的 CRLF
+#   会在下次 checkout 时统一为 LF（不影响仓库正确性，故本次不主动改写工作树）。
+#
+# ⚠ 若将来新增 .bat/.cmd，下两行已为它们保留 CRLF —— Windows 批处理改成 LF 会让
+#   cmd 解析异常。这是本规则唯一的方向性例外。
+
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制素材不做行尾转换
+*.pptx binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.zip binary
