@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+
+# 本地跑流水线产生的中间产物与输出（不要把个人导出物带进仓库）
+work/
+out/
+build/
+dist/
+
+# 编辑器 / 系统噪音
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
