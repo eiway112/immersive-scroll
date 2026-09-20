@@ -80,6 +80,8 @@ node scripts/verify_single_html.js ./out/deck.html     # 第 7 段：双视口�
 
 ## 第三方许可
 
+完整声明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
+
 - **GSAP 3.15** — Standard "No Charge" License。商用允许；禁止用于"无代码可视化动画构建器"类竞品。该许可**不允许单独分发 GSAP 本体**，因此本仓库不附带 `gsap.min.js`，请在构建时从 npm 获取并内联。
 - **Lenis 1.3.26** — MIT。
 
@@ -96,4 +98,6 @@ node scripts/verify_single_html.js ./out/deck.html     # 第 7 段：双视口�
 
 ## License
 
-MIT，见 `LICENSE`。
+本仓库以 **MIT** 许可发布，见 [`LICENSE`](LICENSE)。
+
+第三方组件（GSAP / Lenis）的许可声明见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
