@@ -38,6 +38,94 @@ import argparse
 
 # ---------------------------------------------------------------- 纯文本工具
 
+# 单行长度上限（字符）：微信内置浏览器（Android X5、iOS WKWebView）的解析器
+# 对超长单行文本节点有实际上限，超限会截断或判定文档无效——**桌面 Chrome 无此限制**，
+# 因此本问题在 PC 上测不出来，只在手机内置浏览器暴露（2026-09-21 实测）。
+# 表现：手机内置浏览器打不开，Chrome 正常。
+#
+# 设两级阈值：
+#   IMG_CHUNK_CHARS   单块目标值（多块拼装时的切分点，256 KB）
+#   IMG_LINE_MAX      单行硬上限（**任何**一行都不得超过，64 KB）
+# 单张图 base64 自身可能超过 256 KB，此时把该图字符串切片后跨行拼接，
+# 保证「单行」始终 ≤ IMG_LINE_MAX——图片质量零损失（只改注入形式，不改数据）。
+IMG_CHUNK_CHARS = 256 * 1024
+IMG_LINE_MAX = 64 * 1024
+# 块内单行载荷上限（留出引号/分号等壳字符余量）
+IMG_PAYLOAD_MAX = IMG_LINE_MAX - 512
+
+
+def _emit_image(key, value):
+    """把一张图的赋值语句产出为「每行不超过 IMG_LINE_MAX」的形式。
+
+    base64 本身不含引号、反斜杠等需转义字符，可安全按长度切片后用 `+` 拼接；
+    JSON 转义后的外壳（双引号）只加在首尾，切片内容原样保留。
+    """
+    prefix = "window.__IMG__[" + json.dumps(key, ensure_ascii=False) + "]="
+    tail = ";"
+    # "data:image/webp;base64,XXXX" 的 JSON 串（含首尾引号）
+    lit = json.dumps(value, ensure_ascii=False)
+    if len(prefix) + len(lit) + len(tail) <= IMG_LINE_MAX:
+        return [prefix + lit + tail]
+    # 超长：拆成 (首段 + 若干中段 + 尾段) 的字符串拼接
+    body = lit[1:-1]                      # 去掉外层引号
+    avail = IMG_PAYLOAD_MAX - len(prefix) - 8   # 首行余量
+    first, rest = body[:avail], body[avail:]
+    lines = [prefix + '"' + first + '"']
+    while rest:
+        take, rest = rest[:IMG_PAYLOAD_MAX], rest[IMG_PAYLOAD_MAX:]
+        lines.append('+"' + take + '"')
+    lines[-1] += tail
+    return lines
+
+
+def imgdata_script(inline, chunk_chars=IMG_CHUNK_CHARS):
+    """把内联图数据切成多个小 <script> 块，规避 WebView 超长单行限制。
+
+    **为什么要分块（实测根因）**：94 张图序列化成一个 JSON 对象时产生 15.83 MB 的
+    单行文本，微信内置浏览器直接打不开（Chrome 正常）。分块后单行 ≤64 KB。
+
+    两级策略：
+      1. 按 key 累加，超过 chunk_chars 起新块（块内是若干张图的赋值语句）；
+      2. 单张图自身超长时，对该图字符串切片跨行拼接（见 _emit_image）。
+    两条合起来保证 **任何单行都不超过 IMG_LINE_MAX**，与图片数量、单图大小都无关。
+
+    所有块都排在主脚本之前，逐块挂到同一个 window.__IMG__ 上，
+    主脚本读到的对象与单块注入时完全一致，渲染逻辑零改动。
+    """
+    if not inline:
+        return "<script>window.__IMG__=window.__IMG__||{};</script>"
+
+    # 先按 key 排序保证可重现（dict 顺序依赖插入序，跨次构建可能不同）
+    items = sorted(inline.items())
+    chunks, cur, cur_len = [], [], 0
+    for k, v in items:
+        seg_len = len(k) + len(v) + 64          # 64 = 语句壳的余量
+        if cur and cur_len + seg_len > chunk_chars:
+            chunks.append(cur)
+            cur, cur_len = [], 0
+        cur.append((k, v))
+        cur_len += seg_len
+    if cur:
+        chunks.append(cur)
+
+    parts = ["<script>window.__IMG__=window.__IMG__||{};</script>"]
+    for c in chunks:
+        lines = []
+        for k, v in c:
+            lines.extend(_emit_image(k, v))
+        body = "\n".join(lines)
+        # 硬闸门：任何一行超过 IMG_LINE_MAX 就等于分块失效（手机打不开）
+        worst = max((len(l) for l in lines), default=0)
+        if worst > IMG_LINE_MAX:
+            raise AssertionError(
+                "图片数据单行 %d 字符，超过硬上限 %d——分块失效，WebView 会打不开。"
+                "（该块起始 key: %s）" % (worst, IMG_LINE_MAX, c[0][0]))
+        parts.append("<script>" + body + "</script>")
+    return "\n".join(parts)
+
+
+
+
 def clean_label(text):
     """压缩中文标签内部的对齐空格（PPT 排版伪影）：'密   度：' -> '密度：'"""
     return re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text).strip()
@@ -209,8 +297,7 @@ class Page(object):
         # 只内联被引用的图（引用不到的素材不进产物，避免白占体积）
         keys = set(re.findall(r'data-img="([^"]+)"', html))
         inline = {k: v for k, v in self.img.items() if k in keys}
-        html = html.replace("__IMGDATA__",
-                            "window.__IMG__=" + json.dumps(inline, ensure_ascii=False) + ";")
+        html = html.replace("__IMGDATA__", imgdata_script(inline))
         html = html.replace("__JS__", js or "")
         html = html.replace("__TOURJS__", tour_js or "")
 
@@ -290,7 +377,7 @@ __BODY__
 </main>
 <div id="lb"><span class="close">&times;</span><img alt=""><div class="cap"></div></div>
 <script>__VENDOR__</script>
-<script>__IMGDATA__</script>
+__IMGDATA__
 <script>__JS__</script>
 <script>__TOURJS__</script>
 </body>
@@ -304,7 +391,7 @@ def main(argv=None):
     ap.add_argument("--work", required=True, help="extract_pptx.py 的输出目录")
     ap.add_argument("--sections", required=True, help="编排模块（需暴露 build_body(page)）")
     ap.add_argument("--out", required=True, help="产物 HTML 路径")
-    ap.add_argument("--title", default="沉浸式滚动页", help="页面标题")
+    ap.add_argument("--title", help="页面标题；缺省时读 sections.py 的 TITLE（没有则报错）")
     ap.add_argument("--css", help="追加 CSS 文件（与内置基础层合并）")
     ap.add_argument("--no-pattern", action="store_true",
                     help="不注入内置版式层（只留机制层），换皮时用 --css 自带全部版式")
@@ -321,6 +408,16 @@ def main(argv=None):
     page = Page(os.path.abspath(args.work))
     body = sections.build_body(page)
     nav_items = sections.nav_items(page) if hasattr(sections, "nav_items") else None
+
+    # 标题来源优先级：命令行 > sections.py 的 TITLE > 报错。
+    # 刻意不给默认值：标题会显示在微信/iMessage 的分享卡片上，默认值一旦生效
+    # 就是"看起来构建成功、分享出去却是'沉浸式滚动页'"的静默事故（实测踩过）。
+    title = args.title or getattr(sections, "TITLE", None)
+    if not title:
+        raise SystemExit(
+            "缺少页面标题：命令行未传 --title，sections.py 里也没有 TITLE。\n"
+            "标题会显示在分享卡片上，必须显式指定（不要依赖默认值）。")
+
     css = ""
     if args.css:
         with io.open(args.css, encoding="utf-8") as f:
@@ -337,7 +434,7 @@ def main(argv=None):
     elif hasattr(sections, "TOUR_JS"):
         tour_js = sections.TOUR_JS or ""
 
-    for line in page.build(os.path.abspath(args.out), args.title, body, css=css,
+    for line in page.build(os.path.abspath(args.out), title, body, css=css,
                            js=BASE_JS + (getattr(sections, "EXTRA_JS", "") or ""),
                            nav_items=nav_items, vendor_dir=args.vendor_dir,
                            tour_js=tour_js, ar_marker=args.ar_marker,
